@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { eventsService } from '@/features/events/eventsService'
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 /**
  * Parse a raw QR / manual-input string into a numeric user ID.
@@ -18,8 +18,13 @@ function parseUserQr(raw) {
   return null
 }
 
+/**
+ * Camera access is supported on every modern browser including iOS Safari 11+.
+ * We use getUserMedia + canvas + jsQR instead of the Chrome-only BarcodeDetector.
+ */
 const SCANNER_SUPPORTED =
-  typeof window !== 'undefined' && 'BarcodeDetector' in window
+  typeof navigator !== 'undefined' &&
+  !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
 
 // ── main component ────────────────────────────────────────────────────────────
 
@@ -28,7 +33,8 @@ const SCANNER_SUPPORTED =
  *
  * Renders a compact registration widget for an event. Supports:
  *   1. Manual text entry (USER:<id> or plain numeric id)
- *   2. QR scanner via native BarcodeDetector + getUserMedia (Chrome/Edge 88+)
+ *   2. QR scanner via getUserMedia + canvas + jsQR
+ *      — works on iOS Safari, Android Chrome, Desktop Chrome/Firefox/Safari
  *
  * Props:
  *   eventId   — the current event id
@@ -43,12 +49,11 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
   const [busy, setBusy] = useState(false)
 
   const videoRef = useRef(null)
+  const canvasRef = useRef(null)
   const streamRef = useRef(null)
   const rafRef = useRef(null)
-  const detectorRef = useRef(null)
-  const lastScanRef = useRef(0) // debounce repeated scans of same frame
 
-  // ── registration call ──────────────────────────────────────────────────────
+  // ── registration call ─────────────────────────────────────────────────────
 
   const register = useCallback(
     async (userId) => {
@@ -73,10 +78,11 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
         setBusy(false)
       }
     },
-    [eventId, busy, onSuccess],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [eventId, onSuccess],
   )
 
-  // ── manual submit ──────────────────────────────────────────────────────────
+  // ── manual submit ─────────────────────────────────────────────────────────
 
   const handleManualSubmit = (e) => {
     e.preventDefault()
@@ -90,7 +96,7 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
     register(userId)
   }
 
-  // ── scanner lifecycle ──────────────────────────────────────────────────────
+  // ── scanner lifecycle ─────────────────────────────────────────────────────
 
   const stopScanner = useCallback(() => {
     if (rafRef.current) {
@@ -107,10 +113,18 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
 
   const startScanner = useCallback(async () => {
     setScanError('')
+
     if (!SCANNER_SUPPORTED) {
-      setScanError('QR scanner not available in this browser (requires Chrome 88+ / Edge 88+). Use manual input instead.')
+      setScanError('Camera not available in this browser. Use manual input instead.')
       return
     }
+
+    // jsQR is loaded via <script> in index.html → window.jsQR
+    if (typeof window.jsQR !== 'function') {
+      setScanError('QR library failed to load. Check your network connection or use manual input.')
+      return
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
@@ -122,48 +136,57 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
     }
   }, [])
 
-  // Attach stream to video element once scanning becomes true
+  // Attach stream → video, start decode loop once scanning=true
   useEffect(() => {
     if (!scanning || !videoRef.current || !streamRef.current) return
+
     const video = videoRef.current
     video.srcObject = streamRef.current
     video.play().catch(() => {})
 
-    if (!detectorRef.current) {
-      detectorRef.current = new window.BarcodeDetector({ formats: ['qr_code'] })
-    }
-    const detector = detectorRef.current
+    let lastDetect = 0
 
-    const scanLoop = async () => {
+    const scanLoop = () => {
       if (!scanning) return
-      if (video.readyState >= 2) {
-        const now = Date.now()
-        if (now - lastScanRef.current > 800) {
-          try {
-            const codes = await detector.detect(video)
-            if (codes.length > 0) {
-              const raw = codes[0].rawValue
-              const userId = parseUserQr(raw)
-              if (userId) {
-                lastScanRef.current = now
-                // brief visual pause then register
-                stopScanner()
-                register(userId)
-                return
-              }
-            }
-          } catch {
-            // detector errors are non-fatal — keep looping
+
+      const canvas = canvasRef.current
+      if (!canvas) {
+        rafRef.current = requestAnimationFrame(scanLoop)
+        return
+      }
+
+      const now = Date.now()
+      if (video.readyState >= 2 && now - lastDetect > 300) {
+        const ctx = canvas.getContext('2d')
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        const code = window.jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: 'dontInvert',
+        })
+
+        if (code && code.data) {
+          const userId = parseUserQr(code.data)
+          if (userId) {
+            lastDetect = now
+            stopScanner()
+            register(userId)
+            return
           }
         }
+
+        lastDetect = now
       }
+
       rafRef.current = requestAnimationFrame(scanLoop)
     }
 
     rafRef.current = requestAnimationFrame(scanLoop)
 
     return () => {
-      cancelAnimationFrame(rafRef.current)
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
   }, [scanning, register, stopScanner])
 
@@ -172,17 +195,19 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
     return () => stopScanner()
   }, [stopScanner])
 
-  // ── render ─────────────────────────────────────────────────────────────────
+  // ── render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 space-y-4">
       <p className="text-sm font-medium text-white">Register user to event</p>
       <p className="text-xs text-slate-500">
-        Scan a user QR code or enter <code className="text-slate-400">USER:&lt;id&gt;</code> manually (e.g.{' '}
-        <code className="text-slate-400">USER:42</code> or just <code className="text-slate-400">42</code>).
+        Scan a user QR code or enter{' '}
+        <code className="text-slate-400">USER:&lt;id&gt;</code> manually (e.g.{' '}
+        <code className="text-slate-400">USER:42</code> or just{' '}
+        <code className="text-slate-400">42</code>).
       </p>
 
-      {/* Manual input */}
+      {/* Manual input row */}
       <form onSubmit={handleManualSubmit} className="flex flex-wrap items-end gap-2">
         <div className="flex-1 min-w-[180px]">
           <input
@@ -195,9 +220,11 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
             }}
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-slate-500"
             autoComplete="off"
+            inputMode="numeric"
           />
           {parseError && <p className="mt-1 text-xs text-red-400">{parseError}</p>}
         </div>
+
         <button
           type="submit"
           disabled={busy || !manualInput.trim()}
@@ -205,6 +232,8 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
         >
           {busy ? 'Registering…' : 'Register'}
         </button>
+
+        {/* Scan button — shown on all browsers that support getUserMedia (incl. iOS Safari) */}
         {SCANNER_SUPPORTED && !scanning && (
           <button
             type="button"
@@ -220,21 +249,21 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
             onClick={stopScanner}
             className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-400 hover:bg-slate-800"
           >
-            ✕ Cancel scan
+            ✕ Stop
           </button>
         )}
       </form>
 
-      {/* Scanner error message */}
+      {/* Scanner error / permission message */}
       {scanError && (
         <p className="text-xs text-amber-400 rounded-lg border border-amber-900/40 bg-amber-950/30 px-3 py-2">
           {scanError}
         </p>
       )}
 
-      {/* Video scanner */}
+      {/* Live video feed */}
       {scanning && (
-        <div className="relative overflow-hidden rounded-xl border border-slate-700 bg-black aspect-video max-h-64">
+        <div className="relative overflow-hidden rounded-xl border border-slate-700 bg-black aspect-video max-h-72">
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
           <video
             ref={videoRef}
@@ -242,16 +271,20 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
             playsInline
             muted
           />
+          {/* Targeting overlay */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-40 h-40 border-2 border-white/50 rounded-lg" />
+            <div className="w-44 h-44 border-2 border-white/50 rounded-lg" />
           </div>
-          <div className="absolute bottom-2 left-0 right-0 text-center text-xs text-white/60">
+          <p className="absolute bottom-2 left-0 right-0 text-center text-xs text-white/60">
             Point camera at user QR code
-          </div>
+          </p>
         </div>
       )}
 
-      {/* Recent results */}
+      {/* Hidden canvas used for jsQR frame decoding — never rendered visibly */}
+      <canvas ref={canvasRef} className="hidden" />
+
+      {/* Recent registrations */}
       {recentResults.length > 0 && (
         <div className="space-y-1">
           <p className="text-xs text-slate-600 font-medium">Recent registrations</p>
