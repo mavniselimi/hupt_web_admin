@@ -18,11 +18,15 @@ export const eventsService = {
     return data
   },
   async registerUser(eventId, userId) {
-    const { data } = await apiClient.post(`/api/events/${eventId}/register/${userId}`)
+    const { data } = await apiClient.post(
+      `/api/events/${eventId}/registrations/users/${userId}`
+    )
     return data
   },
   async removeUser(eventId, userId) {
-    const { data } = await apiClient.delete(`/api/events/${eventId}/register/${userId}`)
+    const { data } = await apiClient.delete(
+      `/api/events/${eventId}/registrations/users/${userId}`
+    )
     return data
   },
 }
