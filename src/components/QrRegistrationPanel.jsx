@@ -18,23 +18,23 @@ function parseUserQr(raw) {
   return null
 }
 
-/**
- * Camera access is supported on every modern browser including iOS Safari 11+.
- * We use getUserMedia + canvas + jsQR instead of the Chrome-only BarcodeDetector.
- */
 const SCANNER_SUPPORTED =
   typeof navigator !== 'undefined' &&
   !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+
+// How long (ms) to ignore the same QR value after a successful scan.
+// Prevents re-registering the same person if they linger in frame.
+const SAME_QR_COOLDOWN = 8000
 
 // ── main component ────────────────────────────────────────────────────────────
 
 /**
  * QrRegistrationPanel
  *
- * Renders a compact registration widget for an event. Supports:
- *   1. Manual text entry (USER:<id> or plain numeric id)
- *   2. QR scanner via getUserMedia + canvas + jsQR
- *      — works on iOS Safari, Android Chrome, Desktop Chrome/Firefox/Safari
+ * Continuous QR registration widget. When the scanner is open it stays active
+ * and automatically processes each detected QR code. After a successful scan the
+ * camera keeps running so the next participant can be scanned immediately with no
+ * extra clicks.
  *
  * Props:
  *   eventId   — the current event id
@@ -47,38 +47,45 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
   const [scanError, setScanError] = useState('')
   const [recentResults, setRecentResults] = useState([]) // [{ userId, ok, msg, ts }]
   const [busy, setBusy] = useState(false)
+  const [processingQr, setProcessingQr] = useState(false) // overlay while registering via camera
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
   const rafRef = useRef(null)
+  // Track recently scanned values to debounce duplicate scans
+  const lastScannedRef = useRef({ value: null, at: 0 })
+  // Keep a stable ref to busy so the scan loop can read it without stale closure
+  const busyRef = useRef(false)
+  useEffect(() => { busyRef.current = busy }, [busy])
 
   // ── registration call ─────────────────────────────────────────────────────
 
   const register = useCallback(
-    async (userId) => {
-      if (busy) return
+    async (userId, { fromScanner = false } = {}) => {
+      if (busyRef.current) return
       setBusy(true)
+      if (fromScanner) setProcessingQr(true)
       try {
         await eventsService.registerUser(eventId, userId)
-        const entry = { userId, ok: true, msg: `User ${userId} registered`, ts: Date.now() }
-        setRecentResults((prev) => [entry, ...prev].slice(0, 6))
+        const entry = { userId, ok: true, msg: `✓ User ${userId} registered`, ts: Date.now() }
+        setRecentResults((prev) => [entry, ...prev].slice(0, 8))
         onSuccess?.(userId)
       } catch (err) {
         const status = err?.response?.status
         const serverMsg = err?.response?.data?.message || err?.response?.data || ''
         const msg =
           status === 409
-            ? `User ${userId} is already registered`
+            ? `User ${userId} already registered`
             : status === 404
               ? `User ${userId} not found`
               : `Registration failed${serverMsg ? ': ' + serverMsg : ''}`
-        setRecentResults((prev) => [{ userId, ok: false, msg, ts: Date.now() }, ...prev].slice(0, 6))
+        setRecentResults((prev) => [{ userId, ok: false, msg, ts: Date.now() }, ...prev].slice(0, 8))
       } finally {
         setBusy(false)
+        if (fromScanner) setProcessingQr(false)
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [eventId, onSuccess],
   )
 
@@ -108,6 +115,7 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
       streamRef.current = null
     }
     setScanning(false)
+    setProcessingQr(false)
     setScanError('')
   }, [])
 
@@ -119,9 +127,8 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
       return
     }
 
-    // jsQR is loaded via <script> in index.html → window.jsQR
     if (typeof window.jsQR !== 'function') {
-      setScanError('QR library failed to load. Check your network connection or use manual input.')
+      setScanError('QR library failed to load. Check your network or use manual input.')
       return
     }
 
@@ -136,15 +143,13 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
     }
   }, [])
 
-  // Attach stream → video, start decode loop once scanning=true
+  // Attach stream → video, run continuous decode loop while scanning=true
   useEffect(() => {
     if (!scanning || !videoRef.current || !streamRef.current) return
 
     const video = videoRef.current
     video.srcObject = streamRef.current
     video.play().catch(() => {})
-
-    let lastDetect = 0
 
     const scanLoop = () => {
       if (!scanning) return
@@ -155,8 +160,7 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
         return
       }
 
-      const now = Date.now()
-      if (video.readyState >= 2 && now - lastDetect > 300) {
+      if (video.readyState >= 2) {
         const ctx = canvas.getContext('2d')
         canvas.width = video.videoWidth
         canvas.height = video.videoHeight
@@ -167,17 +171,22 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
           inversionAttempts: 'dontInvert',
         })
 
-        if (code && code.data) {
+        if (code && code.data && !busyRef.current) {
           const userId = parseUserQr(code.data)
           if (userId) {
-            lastDetect = now
-            stopScanner()
-            register(userId)
-            return
+            const now = Date.now()
+            const last = lastScannedRef.current
+            // Skip if this exact QR was processed recently (cooldown window)
+            const isDuplicate =
+              last.value === code.data && now - last.at < SAME_QR_COOLDOWN
+
+            if (!isDuplicate) {
+              lastScannedRef.current = { value: code.data, at: now }
+              // Camera stays ON — do NOT call stopScanner here
+              register(userId, { fromScanner: true })
+            }
           }
         }
-
-        lastDetect = now
       }
 
       rafRef.current = requestAnimationFrame(scanLoop)
@@ -188,7 +197,7 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
-  }, [scanning, register, stopScanner])
+  }, [scanning, register])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -199,12 +208,20 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 space-y-4">
-      <p className="text-sm font-medium text-white">Register user to event</p>
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium text-white">Register participant to event</p>
+        {scanning && (
+          <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+            Camera active
+          </span>
+        )}
+      </div>
+
       <p className="text-xs text-slate-500">
-        Scan a user QR code or enter{' '}
+        Scan a user QR code — camera stays open for continuous check-in. Or enter{' '}
         <code className="text-slate-400">USER:&lt;id&gt;</code> manually (e.g.{' '}
-        <code className="text-slate-400">USER:42</code> or just{' '}
-        <code className="text-slate-400">42</code>).
+        <code className="text-slate-400">USER:42</code> or <code className="text-slate-400">42</code>).
       </p>
 
       {/* Manual input row */}
@@ -230,26 +247,25 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
           disabled={busy || !manualInput.trim()}
           className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:opacity-50"
         >
-          {busy ? 'Registering…' : 'Register'}
+          {busy && !scanning ? 'Registering…' : 'Register'}
         </button>
 
-        {/* Scan button — shown on all browsers that support getUserMedia (incl. iOS Safari) */}
         {SCANNER_SUPPORTED && !scanning && (
           <button
             type="button"
             onClick={startScanner}
             className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
           >
-            📷 Scan QR
+            📷 Start scanning
           </button>
         )}
         {scanning && (
           <button
             type="button"
             onClick={stopScanner}
-            className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-400 hover:bg-slate-800"
+            className="rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-300 hover:bg-red-950/50"
           >
-            ✕ Stop
+            ✕ Stop camera
           </button>
         )}
       </form>
@@ -261,7 +277,7 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
         </p>
       )}
 
-      {/* Live video feed */}
+      {/* Live video feed — stays visible while scanning=true */}
       {scanning && (
         <div className="relative overflow-hidden rounded-xl border border-slate-700 bg-black aspect-video max-h-72">
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -271,23 +287,38 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
             playsInline
             muted
           />
-          {/* Targeting overlay */}
+
+          {/* Targeting frame */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-44 h-44 border-2 border-white/50 rounded-lg" />
+            <div
+              className={`w-44 h-44 rounded-lg border-2 transition-colors duration-200 ${
+                processingQr ? 'border-emerald-400' : 'border-white/50'
+              }`}
+            />
           </div>
-          <p className="absolute bottom-2 left-0 right-0 text-center text-xs text-white/60">
-            Point camera at user QR code
+
+          {/* Processing overlay */}
+          {processingQr && (
+            <div className="absolute inset-0 flex items-center justify-center bg-emerald-950/60 pointer-events-none">
+              <p className="text-sm font-semibold text-emerald-300">Registering…</p>
+            </div>
+          )}
+
+          <p className="absolute bottom-2 left-0 right-0 text-center text-xs text-white/60 select-none">
+            {processingQr ? 'Processing scan…' : 'Point at participant QR — camera stays open'}
           </p>
         </div>
       )}
 
-      {/* Hidden canvas used for jsQR frame decoding — never rendered visibly */}
+      {/* Hidden canvas for jsQR frame decoding */}
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* Recent registrations */}
+      {/* Recent registrations feed */}
       {recentResults.length > 0 && (
         <div className="space-y-1">
-          <p className="text-xs text-slate-600 font-medium">Recent registrations</p>
+          <p className="text-xs text-slate-600 font-medium uppercase tracking-wide">
+            Recent registrations
+          </p>
           {recentResults.map((r) => (
             <div
               key={r.ts}
@@ -297,7 +328,6 @@ export function QrRegistrationPanel({ eventId, onSuccess }) {
                   : 'border border-red-900/50 bg-red-950/40 text-red-300'
               }`}
             >
-              <span>{r.ok ? '✓' : '✗'}</span>
               <span>{r.msg}</span>
             </div>
           ))}

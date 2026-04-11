@@ -33,4 +33,12 @@ export const sessionsService = {
     const { data } = await apiClient.patch(`/api/sessions/${sessionId}/qr/regenerate`)
     return data
   },
+  /**
+   * Admin / Registrar only. Returns SessionDetailDto which includes the qrKey
+   * so the admin panel can display the session QR code for check-in.
+   */
+  async adminDetail(sessionId) {
+    const { data } = await apiClient.get(`/api/sessions/${sessionId}/detail`)
+    return data
+  },
 }

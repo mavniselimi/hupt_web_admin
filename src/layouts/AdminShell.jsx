@@ -1,23 +1,38 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 
-const NAV = [
+const NAV_ADMIN = [
   { to: '/', label: 'Dashboard' },
   { to: '/events', label: 'Events' },
   { to: '/users', label: 'Users' },
+]
+
+// Registrars only need Dashboard + Events (no user management)
+const NAV_REGISTRAR = [
+  { to: '/', label: 'Dashboard' },
+  { to: '/events', label: 'Events' },
 ]
 
 export function AdminShell() {
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
 
+  const isRegistrar = user?.role === 'Registrar'
+  const nav = isRegistrar ? NAV_REGISTRAR : NAV_ADMIN
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-7xl flex-col md:flex-row">
         <aside className="hidden w-56 shrink-0 border-r border-slate-800 bg-slate-900 p-4 md:block">
-          <div className="mb-6 text-sm font-semibold tracking-tight text-white">HUPT Admin</div>
+          <div className="mb-1 text-sm font-semibold tracking-tight text-white">HUPT Admin</div>
+          {isRegistrar && (
+            <div className="mb-5 mt-1 rounded px-1 py-0.5 text-xs text-slate-500">
+              Registrar mode
+            </div>
+          )}
+          {!isRegistrar && <div className="mb-5" />}
           <nav className="space-y-1">
-            {NAV.map((item) => (
+            {nav.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -38,7 +53,14 @@ export function AdminShell() {
           <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-slate-950/90 px-4 py-3 backdrop-blur md:px-6">
             <div>
               <p className="text-sm font-medium text-white">{user?.name}</p>
-              <p className="text-xs text-slate-500">{user?.email}</p>
+              <p className="text-xs text-slate-500">
+                {user?.email}
+                {isRegistrar && (
+                  <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">
+                    Registrar
+                  </span>
+                )}
+              </p>
             </div>
             <button
               type="button"
@@ -57,8 +79,8 @@ export function AdminShell() {
           </main>
 
           <nav className="fixed bottom-0 left-0 right-0 border-t border-slate-800 bg-slate-900 md:hidden">
-            <div className="grid grid-cols-3">
-              {NAV.map((item) => (
+            <div className={`grid grid-cols-${nav.length}`}>
+              {nav.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}

@@ -36,7 +36,7 @@ export function AdminProtectedRoute({ children }) {
       </div>
     )
   }
-  if (user?.role !== 'Admin') {
+  if (!['Admin', 'Registrar'].includes(user?.role)) {
     return <Navigate to="/access-denied" replace />
   }
 
