@@ -18,11 +18,13 @@ export const eventsService = {
     return data
   },
   async registerUser(eventId, userId) {
-    const { data } = await apiClient.post(`/api/events/${eventId}/register/${userId}`)
+    // Correct backend path: POST /api/events/{eventId}/registrations/users/{userId}
+    const { data } = await apiClient.post(`/api/events/${eventId}/registrations/users/${userId}`)
     return data
   },
   async removeUser(eventId, userId) {
-    const { data } = await apiClient.delete(`/api/events/${eventId}/register/${userId}`)
+    // Correct backend path: DELETE /api/events/{eventId}/registrations/users/{userId}
+    const { data } = await apiClient.delete(`/api/events/${eventId}/registrations/users/${userId}`)
     return data
   },
 }
