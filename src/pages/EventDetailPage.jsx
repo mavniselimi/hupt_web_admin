@@ -7,6 +7,7 @@ import { formatDateTime, localInputToIso } from '@/utils/formatters'
 import { EmptyState, ErrorState, LoadingState } from '@/components/PageState'
 import { QrRegistrationPanel } from '@/components/QrRegistrationPanel'
 import { useToast } from '@/hooks/useToast'
+import { useAuthStore } from '@/store/authStore'
 
 const emptySession = {
   title: '',
@@ -19,8 +20,12 @@ const emptySession = {
 export function EventDetailPage() {
   const { eventId } = useParams()
   const toast = useToast()
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'Admin'
+
   const [event, setEvent] = useState(null)
   const [sessions, setSessions] = useState([])
+  // users list is only fetched/used for the Admin "remove user" dropdown
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -30,21 +35,40 @@ export function EventDetailPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
+    setError('')
     try {
-      const [ev, sess, usr] = await Promise.all([
+      // Core data — both Admin and Registrar need event + sessions
+      const [ev, sess] = await Promise.all([
         eventsService.detail(eventId),
         sessionsService.byEvent(eventId),
-        usersService.list(),
       ])
       setEvent(ev)
       setSessions(sess)
-      setUsers(usr)
-    } catch {
-      setError('Failed to load event.')
+
+      // Admin-only: fetch full user list for the "remove user" dropdown.
+      // Registrars do not have permission for GET /api/users, so skip entirely.
+      if (isAdmin) {
+        try {
+          const usr = await usersService.list()
+          setUsers(usr)
+        } catch {
+          // Non-fatal: admin user list failing just empties the remove-user dropdown
+          setUsers([])
+        }
+      }
+    } catch (err) {
+      const status = err?.response?.status
+      if (status === 403) {
+        setError('Access denied — you do not have permission to view this event.')
+      } else if (status === 404) {
+        setError('Event not found.')
+      } else {
+        setError('Failed to load event. Please try again.')
+      }
     } finally {
       setLoading(false)
     }
-  }, [eventId])
+  }, [eventId, isAdmin])
 
   useEffect(() => {
     load()
@@ -114,94 +138,104 @@ export function EventDetailPage() {
         </div>
       </div>
 
-      {/* ── QR / manual registration ── */}
+      {/* ── QR / manual registration — available to Admin and Registrar ── */}
       <QrRegistrationPanel eventId={eventId} onSuccess={load} />
 
-      {/* ── Remove user (by dropdown) ── */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-        <p className="text-sm font-medium text-white">Remove user from event</p>
-        <form onSubmit={removeUser} className="mt-3 flex flex-wrap items-end gap-2">
-          <select
-            value={removeUserId}
-            onChange={(e) => setRemoveUserId(e.target.value)}
-            className="min-w-[200px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-          >
-            <option value="">Select user to remove…</option>
-            {users.map((u) => (
-              <option key={u.id} value={String(u.id)}>
-                #{u.id} — {u.name} ({u.email})
-              </option>
-            ))}
-          </select>
-          <button
-            type="submit"
-            disabled={!removeUserId}
-            className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-200 disabled:opacity-50"
-          >
-            Remove from event
-          </button>
-        </form>
-        <p className="mt-2 text-xs text-slate-600">
-          Note: the backend does not expose a registered-user list, so this dropdown shows all users.
-          See the <Link to="/users" className="text-slate-400 underline">Users page</Link> for IDs.
-        </p>
-      </div>
-
-      <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-        <p className="text-sm font-medium text-white">New session</p>
-        <form onSubmit={createSession} className="mt-3 grid gap-2 sm:grid-cols-2">
-          <input
-            placeholder="Title"
-            value={sessionForm.title}
-            onChange={(e) => setSessionForm((p) => ({ ...p, title: e.target.value }))}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white sm:col-span-2"
-            required
-          />
-          <textarea
-            placeholder="Description"
-            value={sessionForm.description}
-            onChange={(e) => setSessionForm((p) => ({ ...p, description: e.target.value }))}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white sm:col-span-2"
-            rows={2}
-          />
-          <input
-            placeholder="Speaker"
-            value={sessionForm.speaker}
-            onChange={(e) => setSessionForm((p) => ({ ...p, speaker: e.target.value }))}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white sm:col-span-2"
-          />
-          <label className="text-xs text-slate-500">
-            Start
-            <input
-              type="datetime-local"
-              value={sessionForm.startLocal}
-              onChange={(e) => setSessionForm((p) => ({ ...p, startLocal: e.target.value }))}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-              required
-            />
-          </label>
-          <label className="text-xs text-slate-500">
-            End
-            <input
-              type="datetime-local"
-              value={sessionForm.endLocal}
-              onChange={(e) => setSessionForm((p) => ({ ...p, endLocal: e.target.value }))}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-              required
-            />
-          </label>
-          <div className="sm:col-span-2">
+      {/* ── Remove user from event — Admin only ── */}
+      {isAdmin && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+          <p className="text-sm font-medium text-white">Remove user from event</p>
+          <form onSubmit={removeUser} className="mt-3 flex flex-wrap items-end gap-2">
+            <select
+              value={removeUserId}
+              onChange={(e) => setRemoveUserId(e.target.value)}
+              className="min-w-[200px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+            >
+              <option value="">Select user to remove…</option>
+              {users.map((u) => (
+                <option key={u.id} value={String(u.id)}>
+                  #{u.id} — {u.name} ({u.email})
+                </option>
+              ))}
+            </select>
             <button
               type="submit"
-              disabled={savingSession}
-              className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+              disabled={!removeUserId}
+              className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-200 disabled:opacity-50"
             >
-              {savingSession ? 'Creating...' : 'Create session'}
+              Remove from event
             </button>
-          </div>
-        </form>
-      </div>
+          </form>
+          <p className="mt-2 text-xs text-slate-600">
+            Note: the backend does not expose a registered-user list, so this dropdown shows all users.
+            See the{' '}
+            <Link to="/users" className="text-slate-400 underline">
+              Users page
+            </Link>{' '}
+            for IDs.
+          </p>
+        </div>
+      )}
 
+      {/* ── New session form — Admin only ── */}
+      {isAdmin && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+          <p className="text-sm font-medium text-white">New session</p>
+          <form onSubmit={createSession} className="mt-3 grid gap-2 sm:grid-cols-2">
+            <input
+              placeholder="Title"
+              value={sessionForm.title}
+              onChange={(e) => setSessionForm((p) => ({ ...p, title: e.target.value }))}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white sm:col-span-2"
+              required
+            />
+            <textarea
+              placeholder="Description"
+              value={sessionForm.description}
+              onChange={(e) => setSessionForm((p) => ({ ...p, description: e.target.value }))}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white sm:col-span-2"
+              rows={2}
+            />
+            <input
+              placeholder="Speaker"
+              value={sessionForm.speaker}
+              onChange={(e) => setSessionForm((p) => ({ ...p, speaker: e.target.value }))}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white sm:col-span-2"
+            />
+            <label className="text-xs text-slate-500">
+              Start
+              <input
+                type="datetime-local"
+                value={sessionForm.startLocal}
+                onChange={(e) => setSessionForm((p) => ({ ...p, startLocal: e.target.value }))}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                required
+              />
+            </label>
+            <label className="text-xs text-slate-500">
+              End
+              <input
+                type="datetime-local"
+                value={sessionForm.endLocal}
+                onChange={(e) => setSessionForm((p) => ({ ...p, endLocal: e.target.value }))}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                required
+              />
+            </label>
+            <div className="sm:col-span-2">
+              <button
+                type="submit"
+                disabled={savingSession}
+                className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+              >
+                {savingSession ? 'Creating...' : 'Create session'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ── Sessions list — visible to Admin and Registrar ── */}
       <div>
         <h3 className="mb-2 font-medium text-white">Sessions</h3>
         {!sessions.length ? (
@@ -219,7 +253,8 @@ export function EventDetailPage() {
                     <p className="text-xs text-slate-500">{formatDateTime(s.startTime)}</p>
                   </div>
                   <span className="text-xs text-slate-600">
-                    {s.active ? 'Active' : 'Inactive'} · Attendance {s.attendanceEnabled ? 'on' : 'off'}
+                    {s.active ? 'Active' : 'Inactive'} · Attendance{' '}
+                    {s.attendanceEnabled ? 'on' : 'off'}
                   </span>
                 </Link>
               </li>
