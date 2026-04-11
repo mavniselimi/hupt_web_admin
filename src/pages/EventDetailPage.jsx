@@ -5,7 +5,6 @@ import { sessionsService } from '@/features/sessions/sessionsService'
 import { usersService } from '@/features/users/usersService'
 import { formatDateTime, localInputToIso } from '@/utils/formatters'
 import { EmptyState, ErrorState, LoadingState } from '@/components/PageState'
-import { QrRegistrationPanel } from '@/components/QrRegistrationPanel'
 import { useToast } from '@/hooks/useToast'
 import { useAuthStore } from '@/store/authStore'
 
@@ -17,16 +16,28 @@ const emptySession = {
   endLocal: '',
 }
 
+/**
+ * EventDetailPage — /events/:eventId
+ *
+ * Admin-focused event management page:
+ *   - Event information
+ *   - Session list with links to session detail
+ *   - Create session form  (Admin only)
+ *   - Remove user from event  (Admin only)
+ *
+ * The QR / registration-desk workflow lives on DeskPage (/events/:eventId/desk).
+ * Registrar users who land here see event info and a clear redirect to the desk.
+ */
 export function EventDetailPage() {
   const { eventId } = useParams()
   const toast = useToast()
   const { user } = useAuthStore()
   const isAdmin = user?.role === 'Admin'
+  const isRegistrar = user?.role === 'Registrar'
 
   const [event, setEvent] = useState(null)
   const [sessions, setSessions] = useState([])
-  // users list is only fetched/used for the Admin "remove user" dropdown
-  const [users, setUsers] = useState([])
+  const [users, setUsers] = useState([])   // Admin-only: for remove-user dropdown
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [sessionForm, setSessionForm] = useState(emptySession)
@@ -37,7 +48,7 @@ export function EventDetailPage() {
     setLoading(true)
     setError('')
     try {
-      // Core data — both Admin and Registrar need event + sessions
+      // Core data — fetch event + sessions for all roles
       const [ev, sess] = await Promise.all([
         eventsService.detail(eventId),
         sessionsService.byEvent(eventId),
@@ -45,21 +56,19 @@ export function EventDetailPage() {
       setEvent(ev)
       setSessions(sess)
 
-      // Admin-only: fetch full user list for the "remove user" dropdown.
-      // Registrars do not have permission for GET /api/users, so skip entirely.
+      // Admin-only: user list for the "remove user" dropdown.
+      // GET /api/users is Admin-only; do not call it for Registrar.
       if (isAdmin) {
         try {
-          const usr = await usersService.list()
-          setUsers(usr)
+          setUsers(await usersService.list())
         } catch {
-          // Non-fatal: admin user list failing just empties the remove-user dropdown
-          setUsers([])
+          setUsers([])   // non-fatal — dropdown just stays empty
         }
       }
     } catch (err) {
       const status = err?.response?.status
       if (status === 403) {
-        setError('Access denied — you do not have permission to view this event.')
+        setError('Access denied.')
       } else if (status === 404) {
         setError('Event not found.')
       } else {
@@ -120,6 +129,7 @@ export function EventDetailPage() {
 
   return (
     <section className="space-y-6">
+      {/* ── Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <Link to="/events" className="text-xs text-slate-500 hover:text-slate-300">
@@ -136,48 +146,61 @@ export function EventDetailPage() {
             </span>
           </div>
         </div>
+
+        {/* Desk shortcut — visible to both Admin and Registrar */}
+        <Link
+          to={`/events/${eventId}/desk`}
+          className="shrink-0 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+        >
+          Registration desk →
+        </Link>
       </div>
 
-      {/* ── QR / manual registration — available to Admin and Registrar ── */}
-      <QrRegistrationPanel eventId={eventId} onSuccess={load} />
-
-      {/* ── Remove user from event — Admin only ── */}
-      {isAdmin && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-          <p className="text-sm font-medium text-white">Remove user from event</p>
-          <form onSubmit={removeUser} className="mt-3 flex flex-wrap items-end gap-2">
-            <select
-              value={removeUserId}
-              onChange={(e) => setRemoveUserId(e.target.value)}
-              className="min-w-[200px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-            >
-              <option value="">Select user to remove…</option>
-              {users.map((u) => (
-                <option key={u.id} value={String(u.id)}>
-                  #{u.id} — {u.name} ({u.email})
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              disabled={!removeUserId}
-              className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-200 disabled:opacity-50"
-            >
-              Remove from event
-            </button>
-          </form>
-          <p className="mt-2 text-xs text-slate-600">
-            Note: the backend does not expose a registered-user list, so this dropdown shows all users.
-            See the{' '}
-            <Link to="/users" className="text-slate-400 underline">
-              Users page
-            </Link>{' '}
-            for IDs.
+      {/* ── Registrar redirect hint ── */}
+      {isRegistrar && (
+        <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+          <p className="text-sm font-medium text-white">Looking to check in participants?</p>
+          <p className="mt-1 text-sm text-slate-400">
+            The registration desk page has the QR scanner and manual entry tools.
           </p>
+          <Link
+            to={`/events/${eventId}/desk`}
+            className="mt-3 inline-block rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-slate-900"
+          >
+            Go to registration desk →
+          </Link>
         </div>
       )}
 
-      {/* ── New session form — Admin only ── */}
+      {/* ── Sessions list — visible to Admin and Registrar ── */}
+      <div>
+        <h3 className="mb-2 font-medium text-white">Sessions</h3>
+        {!sessions.length ? (
+          <EmptyState message="No sessions for this event." />
+        ) : (
+          <ul className="space-y-2">
+            {sessions.map((s) => (
+              <li key={s.id}>
+                <Link
+                  to={`/sessions/${s.id}`}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 hover:border-slate-600"
+                >
+                  <div>
+                    <p className="font-medium text-white">{s.title}</p>
+                    <p className="text-xs text-slate-500">{formatDateTime(s.startTime)}</p>
+                  </div>
+                  <span className="text-xs text-slate-600">
+                    {s.active ? 'Active' : 'Inactive'} · Attendance{' '}
+                    {s.attendanceEnabled ? 'on' : 'off'}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* ── Create session — Admin only ── */}
       {isAdmin && (
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
           <p className="text-sm font-medium text-white">New session</p>
@@ -235,33 +258,41 @@ export function EventDetailPage() {
         </div>
       )}
 
-      {/* ── Sessions list — visible to Admin and Registrar ── */}
-      <div>
-        <h3 className="mb-2 font-medium text-white">Sessions</h3>
-        {!sessions.length ? (
-          <EmptyState message="No sessions for this event." />
-        ) : (
-          <ul className="space-y-2">
-            {sessions.map((s) => (
-              <li key={s.id}>
-                <Link
-                  to={`/sessions/${s.id}`}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 hover:border-slate-600"
-                >
-                  <div>
-                    <p className="font-medium text-white">{s.title}</p>
-                    <p className="text-xs text-slate-500">{formatDateTime(s.startTime)}</p>
-                  </div>
-                  <span className="text-xs text-slate-600">
-                    {s.active ? 'Active' : 'Inactive'} · Attendance{' '}
-                    {s.attendanceEnabled ? 'on' : 'off'}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* ── Remove user from event — Admin only ── */}
+      {isAdmin && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+          <p className="text-sm font-medium text-white">Remove user from event</p>
+          <form onSubmit={removeUser} className="mt-3 flex flex-wrap items-end gap-2">
+            <select
+              value={removeUserId}
+              onChange={(e) => setRemoveUserId(e.target.value)}
+              className="min-w-[200px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+            >
+              <option value="">Select user to remove…</option>
+              {users.map((u) => (
+                <option key={u.id} value={String(u.id)}>
+                  #{u.id} — {u.name} ({u.email})
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              disabled={!removeUserId}
+              className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-200 disabled:opacity-50"
+            >
+              Remove from event
+            </button>
+          </form>
+          <p className="mt-2 text-xs text-slate-600">
+            Note: the backend does not expose a registered-user list, so this dropdown shows all
+            users. See the{' '}
+            <Link to="/users" className="text-slate-400 underline">
+              Users page
+            </Link>{' '}
+            for IDs.
+          </p>
+        </div>
+      )}
     </section>
   )
 }

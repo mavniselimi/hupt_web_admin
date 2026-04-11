@@ -6,6 +6,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { EventsPage } from '@/pages/EventsPage'
 import { EventDetailPage } from '@/pages/EventDetailPage'
+import { DeskPage } from '@/pages/DeskPage'
 import { SessionDetailPage } from '@/pages/SessionDetailPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { AccessDeniedPage } from '@/pages/AccessDeniedPage'
@@ -26,6 +27,8 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: 'events', element: <EventsPage /> },
       { path: 'events/:eventId', element: <EventDetailPage /> },
+      // Dedicated registrar desk — accessible to Admin and Registrar
+      { path: 'events/:eventId/desk', element: <DeskPage /> },
       { path: 'sessions/:sessionId', element: <SessionDetailPage /> },
       { path: 'users', element: <UsersPage /> },
     ],

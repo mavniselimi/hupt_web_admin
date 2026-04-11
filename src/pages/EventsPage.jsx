@@ -4,6 +4,7 @@ import { eventsService } from '@/features/events/eventsService'
 import { formatDateTime, localInputToIso } from '@/utils/formatters'
 import { EmptyState, ErrorState, LoadingState } from '@/components/PageState'
 import { useToast } from '@/hooks/useToast'
+import { useAuthStore } from '@/store/authStore'
 
 const emptyCreate = {
   title: '',
@@ -16,6 +17,10 @@ const emptyCreate = {
 
 export function EventsPage() {
   const toast = useToast()
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'Admin'
+  const isRegistrar = user?.role === 'Registrar'
+
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -26,8 +31,7 @@ export function EventsPage() {
   const load = async () => {
     setLoading(true)
     try {
-      const data = await eventsService.list()
-      setEvents(data)
+      setEvents(await eventsService.list())
     } catch {
       setError('Failed to load events.')
     } finally {
@@ -75,16 +79,21 @@ export function EventsPage() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-white">Events</h2>
-        <button
-          type="button"
-          onClick={() => setShowCreate(true)}
-          className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900"
-        >
-          New event
-        </button>
+
+        {/* Create button — Admin only */}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setShowCreate(true)}
+            className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900"
+          >
+            New event
+          </button>
+        )}
       </div>
 
-      {showCreate && (
+      {/* ── Create event form — Admin only ── */}
+      {isAdmin && showCreate && (
         <form
           onSubmit={onCreate}
           className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-4"
@@ -158,14 +167,13 @@ export function EventsPage() {
       )}
 
       {!events.length ? (
-        <EmptyState message="No events yet. Create one above." />
+        <EmptyState message="No events yet." />
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
           {events.map((ev) => (
-            <Link
+            <div
               key={ev.id}
-              to={`/events/${ev.id}`}
-              className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 hover:border-slate-600"
+              className="rounded-xl border border-slate-800 bg-slate-900/80 p-4"
             >
               <h3 className="font-semibold text-white">{ev.title}</h3>
               <p className="mt-1 line-clamp-2 text-sm text-slate-500">{ev.description}</p>
@@ -175,7 +183,30 @@ export function EventsPage() {
                   Sessions: {ev.sessionCount} · Registered: {ev.registeredUserCount}
                 </span>
               </div>
-            </Link>
+
+              {/* Role-aware action links */}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {isAdmin && (
+                  <Link
+                    to={`/events/${ev.id}`}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+                  >
+                    Manage event
+                  </Link>
+                )}
+                {/* Desk link shown to Registrar always, and to Admin as a secondary action */}
+                <Link
+                  to={`/events/${ev.id}/desk`}
+                  className={
+                    isRegistrar
+                      ? 'rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-slate-900'
+                      : 'rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800'
+                  }
+                >
+                  Registration desk →
+                </Link>
+              </div>
+            </div>
           ))}
         </div>
       )}
